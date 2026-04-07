@@ -18,3 +18,5 @@ development:
 ```bash
 pnpm run dev
 ```
+
+The sample html file packaged from real page is at `tests/sample.html`.
