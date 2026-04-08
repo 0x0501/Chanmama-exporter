@@ -29,7 +29,7 @@
 
 .header-topline {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
@@ -84,12 +84,6 @@
   gap: 8px;
   flex-shrink: 0;
   padding: 4px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  border-radius: 18px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(248, 250, 252, 0.92));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    0 12px 24px rgba(15, 23, 42, 0.05);
 }
 
 .debug-toggle {
@@ -194,16 +188,13 @@
     border-color 0.18s ease,
     box-shadow 0.18s ease,
     transform 0.18s ease;
+  cursor: pointer;
 }
 
 .button:focus-visible,
 .selector-input:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
-}
-
-.button:hover {
-  transform: translateY(-1px);
 }
 
 .button:disabled {
@@ -217,7 +208,6 @@
   color: #f8fafc;
   background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
   border-color: #0f172a;
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.16);
 }
 
 .button-primary:hover {
@@ -244,12 +234,10 @@
 }
 
 .button-toolbar {
-  min-height: 42px;
   padding: 0 16px;
   border-radius: 14px;
   background: #fff;
   border-color: rgba(148, 163, 184, 0.24);
-  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.05);
 }
 
 .button-toolbar:hover {

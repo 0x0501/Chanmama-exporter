@@ -391,7 +391,6 @@ function App() {
               <div className="header-actions">
                 <label className="debug-toggle">
                   <span className="debug-toggle-copy">
-                    <span className="debug-toggle-label">Debug</span>
                     <span className={`chip chip-inline ${isDebugEnabled ? 'chip-accent' : 'chip-muted'}`}>
                       {isDebugEnabled ? '控制台' : '飞书'}
                     </span>
@@ -417,9 +416,6 @@ function App() {
 
             <div className="title-group">
               <h1>达人详情导出</h1>
-              <p className="description">
-                默认导入飞书多维表格；开启 Debug 后，切换为页面控制台输出。
-              </p>
               <div className="header-summary">
                 <span className={`chip ${isDebugEnabled ? 'chip-accent' : 'chip-muted'}`}>
                   {isDebugEnabled ? 'Debug 已开启' : '默认导入模式'}
