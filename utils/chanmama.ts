@@ -5,7 +5,9 @@ export const CHANMAMA_BLOGGER_PATHNAME_PATTERN = /^\/bloggerRank\/[^/]+\.html$/;
 export const CHANMAMA_BLOGGER_URL_PATTERN =
   /^https:\/\/www\.chanmama\.com\/bloggerRank\/[^/?#]+\.html(?:[?#].*)?$/;
 
-export const CHANMAMA_EXPORT_MESSAGE_TYPE = 'chanmama:export';
+export const CHANMAMA_COLLECT_MESSAGE_TYPE = 'chanmama:collect';
+export const CHANMAMA_LOG_TO_CONSOLE_MESSAGE_TYPE = 'chanmama:log-to-console';
+export const CHANMAMA_FEISHU_IMPORT_MESSAGE_TYPE = 'chanmama:feishu-import';
 
 /**
  * 导出字段英文标识与中文字段名映射。
@@ -36,10 +38,6 @@ export type ChanmamaTextSelectorReadMode = 'single' | 'children';
 
 export type ChanmamaSelectorReadMode = ChanmamaTextSelectorReadMode | 'exists';
 
-export type ChanmamaExportMessage = {
-  type: typeof CHANMAMA_EXPORT_MESSAGE_TYPE;
-};
-
 export type ChanmamaExportData = {
   /** 达人昵称。 */
   [CHANMAMA_EXPORT_FIELD_LABELS.nickname]: string;
@@ -65,8 +63,6 @@ export type ChanmamaExportData = {
   [CHANMAMA_EXPORT_FIELD_LABELS.hasPromotion]: boolean;
 };
 
-export type ChanmamaSelectorSettings = Record<ChanmamaExportFieldName, string>;
-
 type ChanmamaTextSelectorDefinition = {
   field: ChanmamaTextFieldName;
   description: string;
@@ -82,6 +78,8 @@ type ChanmamaBooleanSelectorDefinition = {
 };
 
 type ChanmamaSelectorDefinition = ChanmamaTextSelectorDefinition | ChanmamaBooleanSelectorDefinition;
+
+export type ChanmamaSelectorSettings = Record<ChanmamaExportFieldName, string>;
 
 export const CHANMAMA_TEXT_SELECTOR_SCHEMA = [
   {
@@ -169,6 +167,63 @@ export const CHANMAMA_SELECTOR_SCHEMA = [
   CHANMAMA_BOOLEAN_SELECTOR_SCHEMA,
 ] as const satisfies readonly ChanmamaSelectorDefinition[];
 
+type ChanmamaFeishuSettingsSchemaItem = {
+  field: keyof ChanmamaFeishuSettings;
+  label: string;
+  description: string;
+  placeholder: string;
+  inputType?: 'password';
+};
+
+export type ChanmamaFeishuSettings = {
+  appId: string;
+  appSecret: string;
+  appToken: string;
+  tableId: string;
+};
+
+export const CHANMAMA_FEISHU_SETTINGS_FIELD_LABELS = {
+  appId: 'app_id',
+  appSecret: 'app_secret',
+  appToken: 'app_token',
+  tableId: 'table_id',
+} as const satisfies Record<keyof ChanmamaFeishuSettings, string>;
+
+export const CHANMAMA_FEISHU_SETTINGS_SCHEMA = [
+  {
+    field: 'appId',
+    label: CHANMAMA_FEISHU_SETTINGS_FIELD_LABELS.appId,
+    description: '飞书自建应用的 App ID',
+    placeholder: 'cli_xxxxxxxxxxxxxxxx',
+  },
+  {
+    field: 'appSecret',
+    label: CHANMAMA_FEISHU_SETTINGS_FIELD_LABELS.appSecret,
+    description: '飞书自建应用的 App Secret',
+    placeholder: '应用密钥',
+    inputType: 'password',
+  },
+  {
+    field: 'appToken',
+    label: CHANMAMA_FEISHU_SETTINGS_FIELD_LABELS.appToken,
+    description: '多维表格 app_token',
+    placeholder: 'appxxxxxxxxxxxxxxxx',
+  },
+  {
+    field: 'tableId',
+    label: CHANMAMA_FEISHU_SETTINGS_FIELD_LABELS.tableId,
+    description: '目标数据表 table_id',
+    placeholder: 'tblxxxxxxxxxxxxxxxx',
+  },
+] as const satisfies readonly ChanmamaFeishuSettingsSchemaItem[];
+
+export const CHANMAMA_DEFAULT_FEISHU_SETTINGS: ChanmamaFeishuSettings = {
+  appId: '',
+  appSecret: '',
+  appToken: '',
+  tableId: '',
+};
+
 function buildDefaultSelectorSettings(): ChanmamaSelectorSettings {
   const defaults = {} as ChanmamaSelectorSettings;
 
@@ -182,6 +237,8 @@ function buildDefaultSelectorSettings(): ChanmamaSelectorSettings {
 export const CHANMAMA_DEFAULT_SELECTOR_SETTINGS = buildDefaultSelectorSettings();
 
 const CHANMAMA_SELECTOR_SETTINGS_STORAGE_KEY = 'local:chanmama-selector-settings';
+const CHANMAMA_FEISHU_SETTINGS_STORAGE_KEY = 'local:chanmama-feishu-settings';
+const CHANMAMA_DEBUG_ENABLED_STORAGE_KEY = 'local:chanmama-debug-enabled';
 
 const chanmamaSelectorSettingsStorage = storage.defineItem<Partial<ChanmamaSelectorSettings>>(
   CHANMAMA_SELECTOR_SETTINGS_STORAGE_KEY,
@@ -190,6 +247,17 @@ const chanmamaSelectorSettingsStorage = storage.defineItem<Partial<ChanmamaSelec
   },
 );
 
+const chanmamaFeishuSettingsStorage = storage.defineItem<Partial<ChanmamaFeishuSettings>>(
+  CHANMAMA_FEISHU_SETTINGS_STORAGE_KEY,
+  {
+    fallback: {},
+  },
+);
+
+const chanmamaDebugEnabledStorage = storage.defineItem<boolean>(CHANMAMA_DEBUG_ENABLED_STORAGE_KEY, {
+  fallback: false,
+});
+
 function normalizeSelectorValue(selector: unknown): string | null {
   if (typeof selector !== 'string') {
     return null;
@@ -197,6 +265,10 @@ function normalizeSelectorValue(selector: unknown): string | null {
 
   const trimmedSelector = selector.trim();
   return trimmedSelector.length > 0 ? trimmedSelector : null;
+}
+
+function normalizeFeishuSettingValue(value: unknown) {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 export function normalizeChanmamaSelectorSettings(
@@ -214,6 +286,17 @@ export function normalizeChanmamaSelectorSettings(
   }
 
   return normalized;
+}
+
+export function normalizeChanmamaFeishuSettings(
+  value: Partial<ChanmamaFeishuSettings> | null | undefined,
+): ChanmamaFeishuSettings {
+  return {
+    appId: normalizeFeishuSettingValue(value?.appId),
+    appSecret: normalizeFeishuSettingValue(value?.appSecret),
+    appToken: normalizeFeishuSettingValue(value?.appToken),
+    tableId: normalizeFeishuSettingValue(value?.tableId),
+  };
 }
 
 export async function getChanmamaSelectorSettings(): Promise<ChanmamaSelectorSettings> {
@@ -234,10 +317,81 @@ export async function resetChanmamaSelectorSettings(): Promise<ChanmamaSelectorS
   return { ...CHANMAMA_DEFAULT_SELECTOR_SETTINGS };
 }
 
-export type ChanmamaExportResponse =
+export async function getChanmamaFeishuSettings(): Promise<ChanmamaFeishuSettings> {
+  const value = await chanmamaFeishuSettingsStorage.getValue();
+  return normalizeChanmamaFeishuSettings(value);
+}
+
+export async function setChanmamaFeishuSettings(
+  value: Partial<ChanmamaFeishuSettings>,
+): Promise<ChanmamaFeishuSettings> {
+  const normalized = normalizeChanmamaFeishuSettings(value);
+  await chanmamaFeishuSettingsStorage.setValue(normalized);
+  return normalized;
+}
+
+export async function resetChanmamaFeishuSettings(): Promise<ChanmamaFeishuSettings> {
+  await chanmamaFeishuSettingsStorage.removeValue();
+  return { ...CHANMAMA_DEFAULT_FEISHU_SETTINGS };
+}
+
+export async function getChanmamaDebugEnabled(): Promise<boolean> {
+  const value = await chanmamaDebugEnabledStorage.getValue();
+  return Boolean(value);
+}
+
+export async function setChanmamaDebugEnabled(value: boolean): Promise<boolean> {
+  await chanmamaDebugEnabledStorage.setValue(Boolean(value));
+  return Boolean(value);
+}
+
+export function isChanmamaFeishuSettingsComplete(settings: ChanmamaFeishuSettings): boolean {
+  return Object.values(settings).every((value) => value.length > 0);
+}
+
+export function getChanmamaMissingFeishuSettings(settings: ChanmamaFeishuSettings): string[] {
+  return CHANMAMA_FEISHU_SETTINGS_SCHEMA.filter(({ field }) => settings[field].length === 0).map(
+    ({ label }) => label,
+  );
+}
+
+export type ChanmamaCollectMessage = {
+  type: typeof CHANMAMA_COLLECT_MESSAGE_TYPE;
+};
+
+export type ChanmamaLogToConsoleMessage = {
+  type: typeof CHANMAMA_LOG_TO_CONSOLE_MESSAGE_TYPE;
+  payload: ChanmamaExportData;
+};
+
+export type ChanmamaFeishuImportMessage = {
+  type: typeof CHANMAMA_FEISHU_IMPORT_MESSAGE_TYPE;
+  payload: ChanmamaExportData;
+};
+
+export type ChanmamaCollectResponse =
   | {
       ok: true;
       data: ChanmamaExportData;
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
+export type ChanmamaLogToConsoleResponse =
+  | {
+      ok: true;
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
+export type ChanmamaFeishuImportResponse =
+  | {
+      ok: true;
+      recordId: string;
     }
   | {
       ok: false;

@@ -1,12 +1,15 @@
 import {
   CHANMAMA_BLOGGER_PATHNAME_PATTERN,
   CHANMAMA_BOOLEAN_SELECTOR_SCHEMA,
-  CHANMAMA_EXPORT_MESSAGE_TYPE,
+  CHANMAMA_COLLECT_MESSAGE_TYPE,
+  CHANMAMA_LOG_TO_CONSOLE_MESSAGE_TYPE,
   CHANMAMA_TEXT_SELECTOR_SCHEMA,
   getChanmamaSelectorSettings,
+  type ChanmamaCollectMessage,
+  type ChanmamaCollectResponse,
   type ChanmamaExportData,
-  type ChanmamaExportMessage,
-  type ChanmamaExportResponse,
+  type ChanmamaLogToConsoleMessage,
+  type ChanmamaLogToConsoleResponse,
   type ChanmamaTextFieldName,
   type ChanmamaTextSelectorReadMode,
 } from '@/utils/chanmama';
@@ -76,6 +79,51 @@ function logExportToPageConsole(payload: ChanmamaExportData) {
   script.remove();
 }
 
+async function handleCollect(): Promise<ChanmamaCollectResponse> {
+  if (!isSupportedChanmamaPage()) {
+    return {
+      ok: false,
+      error: '当前页面不是支持的蝉妈妈达人详情页。',
+    };
+  }
+
+  try {
+    const data = await collectChanmamaExportData();
+
+    return {
+      ok: true,
+      data,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : '采集失败，请检查 selector 配置后重试。',
+    };
+  }
+}
+
+function handleLogToConsole(message: ChanmamaLogToConsoleMessage): ChanmamaLogToConsoleResponse {
+  if (!isSupportedChanmamaPage()) {
+    return {
+      ok: false,
+      error: '当前页面不是支持的蝉妈妈达人详情页。',
+    };
+  }
+
+  try {
+    logExportToPageConsole(message.payload);
+
+    return {
+      ok: true,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : '写入页面控制台失败，请稍后重试。',
+    };
+  }
+}
+
 export default defineContentScript({
   matches: ['https://www.chanmama.com/bloggerRank/*'],
   runAt: 'document_idle',
@@ -84,34 +132,18 @@ export default defineContentScript({
       return;
     }
 
-    browser.runtime.onMessage.addListener((message: ChanmamaExportMessage) => {
-      if (message?.type !== CHANMAMA_EXPORT_MESSAGE_TYPE) {
+    browser.runtime.onMessage.addListener(
+      (message: ChanmamaCollectMessage | ChanmamaLogToConsoleMessage) => {
+        if (message?.type === CHANMAMA_COLLECT_MESSAGE_TYPE) {
+          return handleCollect();
+        }
+
+        if (message?.type === CHANMAMA_LOG_TO_CONSOLE_MESSAGE_TYPE) {
+          return handleLogToConsole(message);
+        }
+
         return undefined;
-      }
-
-      return (async () => {
-        if (!isSupportedChanmamaPage()) {
-          return {
-            ok: false,
-            error: '当前页面不是支持的蝉妈妈达人详情页。',
-          } satisfies ChanmamaExportResponse;
-        }
-
-        try {
-          const data = await collectChanmamaExportData();
-          logExportToPageConsole(data);
-
-          return {
-            ok: true,
-            data,
-          } satisfies ChanmamaExportResponse;
-        } catch (error) {
-          return {
-            ok: false,
-            error: error instanceof Error ? error.message : '采集失败，请检查 selector 配置后重试。',
-          } satisfies ChanmamaExportResponse;
-        }
-      })();
-    });
+      },
+    );
   },
 });
