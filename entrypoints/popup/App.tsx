@@ -5,13 +5,15 @@ import { Field } from '@base-ui/react/field';
 import { Input } from '@base-ui/react/input';
 import './App.css';
 import {
+  CHANMAMA_BOOLEAN_SELECTOR_SCHEMA,
   CHANMAMA_COLLECT_MESSAGE_TYPE,
   CHANMAMA_DEFAULT_FEISHU_SETTINGS,
   CHANMAMA_DEFAULT_SELECTOR_SETTINGS,
   CHANMAMA_FEISHU_IMPORT_MESSAGE_TYPE,
   CHANMAMA_FEISHU_SETTINGS_SCHEMA,
-  CHANMAMA_LOG_TO_CONSOLE_MESSAGE_TYPE,
   CHANMAMA_SELECTOR_SCHEMA,
+  CHANMAMA_TEXT_SELECTOR_SCHEMA,
+  createChanmamaError,
   getChanmamaDebugEnabled,
   getChanmamaFeishuSettings,
   getChanmamaSelectorSettings,
@@ -22,22 +24,237 @@ import {
   setChanmamaFeishuSettings,
   setChanmamaSelectorSettings,
   type ChanmamaCollectResponse,
+  type ChanmamaErrorInfo,
+  type ChanmamaExportData,
   type ChanmamaFeishuImportResponse,
   type ChanmamaFeishuSettings,
   type ChanmamaLogToConsoleResponse,
   type ChanmamaSelectorReadMode,
   type ChanmamaSelectorSettings,
 } from '@/utils/chanmama';
+import { importChanmamaDataToFeishu } from '@/utils/feishu';
 
 type PopupStatus =
   | {
       tone: 'neutral';
       message: string;
+      details?: string[];
     }
   | {
       tone: 'success' | 'error';
       message: string;
+      details?: string[];
     };
+
+function buildErrorStatus(error: ChanmamaErrorInfo): PopupStatus {
+  return {
+    tone: 'error',
+    message: error.message,
+    details: [`stage=${error.stage}`, `code=${error.code}`, ...(error.details ?? [])],
+  };
+}
+
+function getRuntimeErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isMissingContentScriptError(error: unknown) {
+  const message = getRuntimeErrorMessage(error);
+
+  return (
+    message.includes('Could not establish connection') ||
+    message.includes('Receiving end does not exist') ||
+    message.includes('The message port closed before a response was received')
+  );
+}
+
+async function injectContentScriptIntoTab(tabId: number) {
+  await browser.scripting.executeScript({
+    target: { tabId, frameIds: [0] },
+    files: ['/content-scripts/content.js'],
+  });
+
+  await new Promise((resolve) => window.setTimeout(resolve, 80));
+}
+
+async function sendMessageToMainFrame<T>(tabId: number, message: unknown) {
+  return (await browser.tabs.sendMessage(tabId, message, {
+    frameId: 0,
+  })) as T;
+}
+
+async function logExportToPageConsole(
+  tabId: number,
+  payload: ChanmamaExportData,
+): Promise<ChanmamaLogToConsoleResponse> {
+  try {
+    await browser.scripting.executeScript({
+      target: { tabId, frameIds: [0] },
+      world: 'MAIN',
+      args: [payload],
+      func: (exportPayload) => {
+        console.log(exportPayload);
+      },
+    });
+
+    return {
+      ok: true,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: createChanmamaError(
+        'popup-export',
+        'CONSOLE_LOG_FAILED',
+        '写入页面控制台失败，请稍后重试。',
+        [getRuntimeErrorMessage(error)],
+      ),
+    };
+  }
+}
+
+async function collectChanmamaExportDataFromPage(
+  tabId: number,
+): Promise<ChanmamaCollectResponse> {
+  try {
+    const selectorSettings = await getChanmamaSelectorSettings();
+    const [executionResult] = await browser.scripting.executeScript({
+      target: { tabId, frameIds: [0] },
+      args: [selectorSettings, CHANMAMA_TEXT_SELECTOR_SCHEMA, CHANMAMA_BOOLEAN_SELECTOR_SCHEMA],
+      func: (
+        currentSelectorSettings: Record<string, string>,
+        textSelectorSchema: ReadonlyArray<{ field: string; mode: 'single' | 'children' }>,
+        booleanSelectorSchema: { field: string },
+      ) => {
+        const normalizeText = (value?: string | null) => value?.replace(/\s+/g, ' ').trim() ?? '';
+
+        const queryElement = (selector: string) => {
+          if (!selector) {
+            return null;
+          }
+
+          try {
+            return document.querySelector<HTMLElement>(selector);
+          } catch (error) {
+            throw new Error(
+              error instanceof Error ? error.message : `Invalid selector: ${selector.slice(0, 120)}`,
+            );
+          }
+        };
+
+        try {
+          const textData = {} as Record<string, string>;
+
+          for (const fieldConfig of textSelectorSchema) {
+            const element = queryElement(currentSelectorSettings[fieldConfig.field] ?? '');
+
+            if (!element) {
+              textData[fieldConfig.field] = '';
+              continue;
+            }
+
+            if (fieldConfig.mode === 'children') {
+              const childTexts = Array.from(element.children)
+                .map((child) => normalizeText(child.textContent))
+                .filter(Boolean);
+
+              if (childTexts.length > 0) {
+                textData[fieldConfig.field] = childTexts.join(' / ');
+                continue;
+              }
+            }
+
+            textData[fieldConfig.field] = normalizeText(element.textContent);
+          }
+
+          return {
+            ok: true as const,
+            data: {
+              ...textData,
+              [booleanSelectorSchema.field]:
+                queryElement(currentSelectorSettings[booleanSelectorSchema.field] ?? '') !== null,
+            },
+          };
+        } catch (error) {
+          return {
+            ok: false as const,
+            errorMessage:
+              error instanceof Error ? error.message : 'Unknown page collection fallback error',
+          };
+        }
+      },
+    });
+
+    const result = executionResult?.result;
+
+    if (!result) {
+      return {
+        ok: false,
+        error: createChanmamaError(
+          'popup-export',
+          'NO_RESPONSE',
+          '采集失败，页面脚本没有返回结果。',
+          [`tabId=${tabId}`],
+        ),
+      };
+    }
+
+    if (!result.ok) {
+      return {
+        ok: false,
+        error: createChanmamaError(
+          'popup-export',
+          'QUERY_FAILED',
+          '采集失败，请检查 selector 配置后重试。',
+          [result.errorMessage],
+        ),
+      };
+    }
+
+    return {
+      ok: true,
+      data: result.data as ChanmamaExportData,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: createChanmamaError(
+        'popup-export',
+        'QUERY_FAILED',
+        '采集失败，请检查 selector 配置后重试。',
+        [getRuntimeErrorMessage(error)],
+      ),
+    };
+  }
+}
+
+async function importChanmamaDataToFeishuFromExtension(
+  payload: ChanmamaExportData,
+): Promise<{
+  response: ChanmamaFeishuImportResponse;
+  usedPopupFallback: boolean;
+}> {
+  try {
+    const response = (await browser.runtime.sendMessage({
+      type: CHANMAMA_FEISHU_IMPORT_MESSAGE_TYPE,
+      payload,
+    })) as ChanmamaFeishuImportResponse | undefined;
+
+    if (response) {
+      return {
+        response,
+        usedPopupFallback: false,
+      };
+    }
+  } catch {
+    // Fall through to popup-side import below.
+  }
+
+  return {
+    response: await importChanmamaDataToFeishu(payload),
+    usedPopupFallback: true,
+  };
+}
 
 function getSelectorModeLabel(mode: ChanmamaSelectorReadMode) {
   if (mode === 'children') {
@@ -175,6 +392,7 @@ function App() {
         setStatus({
           tone: 'error',
           message: error instanceof Error ? error.message : '初始化失败，请稍后重试。',
+          details: [error instanceof Error ? error.stack ?? error.message : 'Unknown init error'],
         });
       }
     }
@@ -216,6 +434,7 @@ function App() {
       setStatus({
         tone: 'error',
         message: error instanceof Error ? error.message : '无法读取设置。',
+        details: [error instanceof Error ? error.stack ?? error.message : 'Unknown settings read error'],
       });
     }
   }
@@ -245,6 +464,7 @@ function App() {
       setStatus({
         tone: 'error',
         message: error instanceof Error ? error.message : '保存设置失败。',
+        details: [error instanceof Error ? error.stack ?? error.message : 'Unknown settings save error'],
       });
     } finally {
       setIsSavingSettings(false);
@@ -266,6 +486,7 @@ function App() {
       setStatus({
         tone: 'error',
         message: error instanceof Error ? error.message : '恢复默认配置失败。',
+        details: [error instanceof Error ? error.stack ?? error.message : 'Unknown selector reset error'],
       });
     } finally {
       setIsSavingSettings(false);
@@ -288,6 +509,7 @@ function App() {
       setStatus({
         tone: 'error',
         message: error instanceof Error ? error.message : '切换 Debug 模式失败。',
+        details: [error instanceof Error ? error.stack ?? error.message : 'Unknown debug toggle error'],
       });
     } finally {
       setIsUpdatingDebug(false);
@@ -320,60 +542,124 @@ function App() {
     });
 
     try {
-      const collectResponse = (await browser.tabs.sendMessage(activeTabId, {
-        type: CHANMAMA_COLLECT_MESSAGE_TYPE,
-      })) as ChanmamaCollectResponse;
+      let collectResponse: ChanmamaCollectResponse | undefined;
+      let recoveredByInjection = false;
+      let recoveredByDirectCollection = false;
+      let importedViaPopupFallback = false;
 
-      if (!collectResponse?.ok) {
-        setStatus({
-          tone: 'error',
-          message: collectResponse?.error ?? '导出失败，未收到有效采集结果。',
+      try {
+        collectResponse = await sendMessageToMainFrame<ChanmamaCollectResponse>(activeTabId, {
+          type: CHANMAMA_COLLECT_MESSAGE_TYPE,
         });
+      } catch (error) {
+        if (isMissingContentScriptError(error)) {
+          try {
+            await injectContentScriptIntoTab(activeTabId);
+            recoveredByInjection = true;
+          } catch (injectionError) {
+            setStatus(
+              buildErrorStatus(
+                createChanmamaError(
+                  'popup-export',
+                  'SCRIPT_INJECTION_FAILED',
+                  '当前页面缺少 content script，且自动重新注入失败。',
+                  [
+                    `tabId=${activeTabId}`,
+                    `url=${activeUrl}`,
+                    `message=${getRuntimeErrorMessage(error)}`,
+                    `injection=${getRuntimeErrorMessage(injectionError)}`,
+                  ],
+                ),
+              ),
+            );
+            return;
+          }
+
+          collectResponse = await sendMessageToMainFrame<ChanmamaCollectResponse>(activeTabId, {
+            type: CHANMAMA_COLLECT_MESSAGE_TYPE,
+          });
+        }
+      }
+
+      if (!collectResponse) {
+        collectResponse = await collectChanmamaExportDataFromPage(activeTabId);
+        recoveredByDirectCollection = true;
+      }
+
+      if (!collectResponse.ok) {
+        setStatus(buildErrorStatus(collectResponse.error));
         return;
       }
 
       if (isDebugEnabled) {
-        const consoleResponse = (await browser.tabs.sendMessage(activeTabId, {
-          type: CHANMAMA_LOG_TO_CONSOLE_MESSAGE_TYPE,
-          payload: collectResponse.data,
-        })) as ChanmamaLogToConsoleResponse;
+        const consoleResponse = await logExportToPageConsole(
+          activeTabId,
+          collectResponse.data,
+        );
 
-        if (!consoleResponse?.ok) {
-          setStatus({
-            tone: 'error',
-            message: consoleResponse?.error ?? '写入页面控制台失败。',
-          });
+        if (!consoleResponse) {
+          setStatus(
+            buildErrorStatus({
+              stage: 'popup-export',
+              code: 'NO_RESPONSE',
+              message: '写入页面控制台失败，content script 没有返回结果。',
+              details: [`tabId=${activeTabId}`],
+            }),
+          );
+          return;
+        }
+
+        if (!consoleResponse.ok) {
+          setStatus(buildErrorStatus(consoleResponse.error));
           return;
         }
 
         setStatus({
           tone: 'success',
           message: `导出完成，页面控制台已输出 ${Object.keys(collectResponse.data).length} 个字段。`,
+          details: [
+            recoveredByInjection ? 'recoveredByInjection=true' : '',
+            recoveredByDirectCollection ? 'recoveredByDirectCollection=true' : '',
+          ].filter(Boolean),
         });
         return;
       }
 
-      const feishuResponse = (await browser.runtime.sendMessage({
-        type: CHANMAMA_FEISHU_IMPORT_MESSAGE_TYPE,
-        payload: collectResponse.data,
-      })) as ChanmamaFeishuImportResponse;
+      const { response: feishuResponse, usedPopupFallback } =
+        await importChanmamaDataToFeishuFromExtension(collectResponse.data);
+      importedViaPopupFallback = usedPopupFallback;
 
-      if (!feishuResponse?.ok) {
-        setStatus({
-          tone: 'error',
-          message: feishuResponse?.error ?? '导入飞书失败。',
-        });
+      if (!feishuResponse) {
+        setStatus(
+          buildErrorStatus({
+            stage: 'popup-export',
+            code: 'NO_RESPONSE',
+            message: '导入飞书失败，background 没有返回结果。',
+            details: [`tabId=${activeTabId}`],
+          }),
+        );
+        return;
+      }
+
+      if (!feishuResponse.ok) {
+        setStatus(buildErrorStatus(feishuResponse.error));
         return;
       }
 
       setStatus({
         tone: 'success',
         message: `导入完成，飞书多维表格已新增记录 ${feishuResponse.recordId}。`,
+        details: [
+          recoveredByInjection ? 'recoveredByInjection=true' : '',
+          recoveredByDirectCollection ? 'recoveredByDirectCollection=true' : '',
+          importedViaPopupFallback ? 'importedViaPopupFallback=true' : '',
+        ].filter(Boolean),
       });
     } catch (error) {
       setStatus({
         tone: 'error',
         message: error instanceof Error ? error.message : '导出失败，请稍后重试。',
+        details: [error instanceof Error ? error.stack ?? error.message : 'Unknown popup export error'],
       });
     } finally {
       setIsExporting(false);
@@ -432,6 +718,9 @@ function App() {
                 <div className="status-copy-group">
                   <p className="status-title">{isSupportedPage ? '页面已就绪' : '等待匹配页面'}</p>
                   <p className="status-message">{status.message}</p>
+                  {status.details?.length ? (
+                    <pre className="status-details">{status.details.join('\n')}</pre>
+                  ) : null}
                 </div>
               </div>
 
@@ -495,10 +784,6 @@ function App() {
                   配置飞书多维表格与页面 selector。关闭 Debug 后，会默认把采集结果导入飞书。
                 </Dialog.Description>
               </div>
-
-              <span className="settings-summary">
-                {CHANMAMA_FEISHU_SETTINGS_SCHEMA.length + CHANMAMA_SELECTOR_SCHEMA.length} 项配置
-              </span>
             </header>
 
             <div className="settings-form">
