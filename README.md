@@ -1,4 +1,4 @@
-# Easy PR Extension
+# Chanmama Exporter (Browser extension)
 
 A browser extension built with `WXT + React + TypeScript`. The current implementation exports creator data from Chanmama blogger detail pages.
 
@@ -76,4 +76,4 @@ https://www.chanmama.com/bloggerRank/XpVfCbDDPbFh3jg9fN8IJGOfV1lOJOmo.html
 
 The repository includes a sample page for local reference:
 
-- [tests/sample.html](E:/Code Space/easy-pr-extension/tests/sample.html)
+- [tests/sample.html](/tests/sample.html)
