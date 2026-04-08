@@ -2,14 +2,12 @@ import {
   CHANMAMA_BLOGGER_PATHNAME_PATTERN,
   CHANMAMA_BOOLEAN_SELECTOR_SCHEMA,
   CHANMAMA_COLLECT_MESSAGE_TYPE,
-  CHANMAMA_LOG_TO_CONSOLE_MESSAGE_TYPE,
   CHANMAMA_TEXT_SELECTOR_SCHEMA,
+  createChanmamaError,
   getChanmamaSelectorSettings,
   type ChanmamaCollectMessage,
   type ChanmamaCollectResponse,
   type ChanmamaExportData,
-  type ChanmamaLogToConsoleMessage,
-  type ChanmamaLogToConsoleResponse,
   type ChanmamaTextFieldName,
   type ChanmamaTextSelectorReadMode,
 } from '@/utils/chanmama';
@@ -29,8 +27,10 @@ function queryElement(selector: string) {
 
   try {
     return document.querySelector<HTMLElement>(selector);
-  } catch {
-    return null;
+  } catch (error) {
+    throw new Error(
+      error instanceof Error ? error.message : `Invalid selector: ${selector.slice(0, 120)}`,
+    );
   }
 }
 
@@ -72,18 +72,16 @@ async function collectChanmamaExportData(): Promise<ChanmamaExportData> {
   };
 }
 
-function logExportToPageConsole(payload: ChanmamaExportData) {
-  const script = document.createElement('script');
-  script.textContent = `console.log(${JSON.stringify(payload)});`;
-  (document.head ?? document.documentElement).appendChild(script);
-  script.remove();
-}
-
 async function handleCollect(): Promise<ChanmamaCollectResponse> {
   if (!isSupportedChanmamaPage()) {
     return {
       ok: false,
-      error: '当前页面不是支持的蝉妈妈达人详情页。',
+      error: createChanmamaError(
+        'content-collect',
+        'UNSUPPORTED_PAGE',
+        '当前页面不是支持的蝉妈妈达人详情页。',
+        [`pathname=${window.location.pathname}`],
+      ),
     };
   }
 
@@ -97,29 +95,15 @@ async function handleCollect(): Promise<ChanmamaCollectResponse> {
   } catch (error) {
     return {
       ok: false,
-      error: error instanceof Error ? error.message : '采集失败，请检查 selector 配置后重试。',
-    };
-  }
-}
-
-function handleLogToConsole(message: ChanmamaLogToConsoleMessage): ChanmamaLogToConsoleResponse {
-  if (!isSupportedChanmamaPage()) {
-    return {
-      ok: false,
-      error: '当前页面不是支持的蝉妈妈达人详情页。',
-    };
-  }
-
-  try {
-    logExportToPageConsole(message.payload);
-
-    return {
-      ok: true,
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : '写入页面控制台失败，请稍后重试。',
+      error: createChanmamaError(
+        'content-collect',
+        'QUERY_FAILED',
+        '采集失败，请检查 selector 配置后重试。',
+        [
+          `pathname=${window.location.pathname}`,
+          error instanceof Error ? error.message : 'Unknown content collection error',
+        ],
+      ),
     };
   }
 }
@@ -127,23 +111,42 @@ function handleLogToConsole(message: ChanmamaLogToConsoleMessage): ChanmamaLogTo
 export default defineContentScript({
   matches: ['https://www.chanmama.com/bloggerRank/*'],
   runAt: 'document_idle',
-  main() {
+  main(ctx) {
     if (!isSupportedChanmamaPage()) {
       return;
     }
 
-    browser.runtime.onMessage.addListener(
-      (message: ChanmamaCollectMessage | ChanmamaLogToConsoleMessage) => {
-        if (message?.type === CHANMAMA_COLLECT_MESSAGE_TYPE) {
-          return handleCollect();
-        }
+    const handleMessage = (
+      message: ChanmamaCollectMessage,
+      _sender: unknown,
+      sendResponse: (response?: ChanmamaCollectResponse) => void,
+    ) => {
+      if (message?.type === CHANMAMA_COLLECT_MESSAGE_TYPE) {
+        void handleCollect()
+          .then((response) => {
+            sendResponse(response);
+          })
+          .catch((error: unknown) => {
+            sendResponse({
+              ok: false,
+              error: createChanmamaError(
+                'content-collect',
+                'UNKNOWN',
+                '采集失败，请检查 selector 配置后重试。',
+                [error instanceof Error ? error.message : 'Unknown content runtime error'],
+              ),
+            } satisfies ChanmamaCollectResponse);
+          });
 
-        if (message?.type === CHANMAMA_LOG_TO_CONSOLE_MESSAGE_TYPE) {
-          return handleLogToConsole(message);
-        }
+        return true;
+      }
 
-        return undefined;
-      },
-    );
+      return undefined;
+    };
+
+    browser.runtime.onMessage.addListener(handleMessage);
+    ctx.onInvalidated(() => {
+      browser.runtime.onMessage.removeListener(handleMessage);
+    });
   },
 });

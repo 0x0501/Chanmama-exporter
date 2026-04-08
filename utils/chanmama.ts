@@ -369,6 +369,33 @@ export type ChanmamaFeishuImportMessage = {
   payload: ChanmamaExportData;
 };
 
+export type ChanmamaErrorStage =
+  | 'popup-init'
+  | 'popup-export'
+  | 'content-collect'
+  | 'content-log'
+  | 'background-feishu';
+
+export type ChanmamaErrorCode =
+  | 'UNSUPPORTED_PAGE'
+  | 'NO_RESPONSE'
+  | 'INVALID_RESPONSE'
+  | 'INVALID_SELECTOR'
+  | 'QUERY_FAILED'
+  | 'SCRIPT_INJECTION_FAILED'
+  | 'CONSOLE_LOG_FAILED'
+  | 'FEISHU_SETTINGS_INCOMPLETE'
+  | 'FEISHU_AUTH_FAILED'
+  | 'FEISHU_RECORD_FAILED'
+  | 'UNKNOWN';
+
+export type ChanmamaErrorInfo = {
+  stage: ChanmamaErrorStage;
+  code: ChanmamaErrorCode;
+  message: string;
+  details?: string[];
+};
+
 export type ChanmamaCollectResponse =
   | {
       ok: true;
@@ -376,7 +403,7 @@ export type ChanmamaCollectResponse =
     }
   | {
       ok: false;
-      error: string;
+      error: ChanmamaErrorInfo;
     };
 
 export type ChanmamaLogToConsoleResponse =
@@ -385,7 +412,7 @@ export type ChanmamaLogToConsoleResponse =
     }
   | {
       ok: false;
-      error: string;
+      error: ChanmamaErrorInfo;
     };
 
 export type ChanmamaFeishuImportResponse =
@@ -395,8 +422,22 @@ export type ChanmamaFeishuImportResponse =
     }
   | {
       ok: false;
-      error: string;
+      error: ChanmamaErrorInfo;
     };
+
+export function createChanmamaError(
+  stage: ChanmamaErrorStage,
+  code: ChanmamaErrorCode,
+  message: string,
+  details?: string[],
+): ChanmamaErrorInfo {
+  return {
+    stage,
+    code,
+    message,
+    details: details?.filter(Boolean),
+  };
+}
 
 export function isSupportedChanmamaBloggerUrl(url?: string | null): boolean {
   if (!url) {
