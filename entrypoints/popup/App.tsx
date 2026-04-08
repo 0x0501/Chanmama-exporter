@@ -10,8 +10,8 @@ import {
   CHANMAMA_DEFAULT_SELECTOR_SETTINGS,
   CHANMAMA_FEISHU_IMPORT_MESSAGE_TYPE,
   CHANMAMA_FEISHU_SETTINGS_SCHEMA,
-  CHANMAMA_LOG_TO_CONSOLE_MESSAGE_TYPE,
   CHANMAMA_SELECTOR_SCHEMA,
+  createChanmamaError,
   getChanmamaDebugEnabled,
   getChanmamaFeishuSettings,
   getChanmamaSelectorSettings,
@@ -23,6 +23,7 @@ import {
   setChanmamaSelectorSettings,
   type ChanmamaCollectResponse,
   type ChanmamaErrorInfo,
+  type ChanmamaExportData,
   type ChanmamaFeishuImportResponse,
   type ChanmamaFeishuSettings,
   type ChanmamaLogToConsoleResponse,
@@ -48,6 +49,65 @@ function buildErrorStatus(error: ChanmamaErrorInfo): PopupStatus {
     message: error.message,
     details: [`stage=${error.stage}`, `code=${error.code}`, ...(error.details ?? [])],
   };
+}
+
+function getRuntimeErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isMissingContentScriptError(error: unknown) {
+  const message = getRuntimeErrorMessage(error);
+
+  return (
+    message.includes('Could not establish connection') ||
+    message.includes('Receiving end does not exist') ||
+    message.includes('The message port closed before a response was received')
+  );
+}
+
+async function injectContentScriptIntoTab(tabId: number) {
+  await browser.scripting.executeScript({
+    target: { tabId, frameIds: [0] },
+    files: ['/content-scripts/content.js'],
+  });
+
+  await new Promise((resolve) => window.setTimeout(resolve, 80));
+}
+
+async function sendMessageToMainFrame<T>(tabId: number, message: unknown) {
+  return (await browser.tabs.sendMessage(tabId, message, {
+    frameId: 0,
+  })) as T;
+}
+
+async function logExportToPageConsole(
+  tabId: number,
+  payload: ChanmamaExportData,
+): Promise<ChanmamaLogToConsoleResponse> {
+  try {
+    await browser.scripting.executeScript({
+      target: { tabId, frameIds: [0] },
+      world: 'MAIN',
+      args: [payload],
+      func: (exportPayload) => {
+        console.log(exportPayload);
+      },
+    });
+
+    return {
+      ok: true,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: createChanmamaError(
+        'popup-export',
+        'CONSOLE_LOG_FAILED',
+        '写入页面控制台失败，请稍后重试。',
+        [getRuntimeErrorMessage(error)],
+      ),
+    };
+  }
 }
 
 function getSelectorModeLabel(mode: ChanmamaSelectorReadMode) {
@@ -336,20 +396,90 @@ function App() {
     });
 
     try {
-      const collectResponse = (await browser.tabs.sendMessage(activeTabId, {
-        type: CHANMAMA_COLLECT_MESSAGE_TYPE,
-      })) as ChanmamaCollectResponse;
+      let collectResponse: ChanmamaCollectResponse | undefined;
+      let recoveredByInjection = false;
+
+      try {
+        collectResponse = await sendMessageToMainFrame<ChanmamaCollectResponse>(activeTabId, {
+          type: CHANMAMA_COLLECT_MESSAGE_TYPE,
+        });
+      } catch (error) {
+        if (!isMissingContentScriptError(error)) {
+          throw error;
+        }
+
+        try {
+          await injectContentScriptIntoTab(activeTabId);
+          recoveredByInjection = true;
+        } catch (injectionError) {
+          setStatus(
+            buildErrorStatus(
+              createChanmamaError(
+                'popup-export',
+                'SCRIPT_INJECTION_FAILED',
+                '当前页面缺少 content script，且自动重新注入失败。',
+                [
+                  `tabId=${activeTabId}`,
+                  `url=${activeUrl}`,
+                  `message=${getRuntimeErrorMessage(error)}`,
+                  `injection=${getRuntimeErrorMessage(injectionError)}`,
+                ],
+              ),
+            ),
+          );
+          return;
+        }
+
+        collectResponse = await sendMessageToMainFrame<ChanmamaCollectResponse>(activeTabId, {
+          type: CHANMAMA_COLLECT_MESSAGE_TYPE,
+        });
+      }
 
       if (!collectResponse) {
-        setStatus(
-          buildErrorStatus({
-            stage: 'popup-export',
-            code: 'NO_RESPONSE',
-            message: '采集失败，content script 没有返回结果。',
-            details: [`tabId=${activeTabId}`, `url=${activeUrl}`],
-          }),
-        );
-        return;
+        if (!recoveredByInjection) {
+          try {
+            await injectContentScriptIntoTab(activeTabId);
+            recoveredByInjection = true;
+            collectResponse = await sendMessageToMainFrame<ChanmamaCollectResponse>(activeTabId, {
+              type: CHANMAMA_COLLECT_MESSAGE_TYPE,
+            });
+          } catch (injectionError) {
+            setStatus(
+              buildErrorStatus(
+                createChanmamaError(
+                  'popup-export',
+                  'SCRIPT_INJECTION_FAILED',
+                  '采集响应为空，且自动重新注入 content script 失败。',
+                  [
+                    `tabId=${activeTabId}`,
+                    `url=${activeUrl}`,
+                    `injection=${getRuntimeErrorMessage(injectionError)}`,
+                  ],
+                ),
+              ),
+            );
+            return;
+          }
+        }
+
+        if (!collectResponse) {
+          setStatus(
+            buildErrorStatus(
+              createChanmamaError(
+                'popup-export',
+                'NO_RESPONSE',
+                '采集失败，content script 仍然没有返回结果。',
+                [
+                  `tabId=${activeTabId}`,
+                  `url=${activeUrl}`,
+                  recoveredByInjection ? 'recoveredByInjection=true' : 'recoveredByInjection=false',
+                  'hint=Likely stale content-script listener after extension reload. Refresh the target tab once and try again.',
+                ],
+              ),
+            ),
+          );
+          return;
+        }
       }
 
       if (!collectResponse.ok) {
@@ -358,10 +488,10 @@ function App() {
       }
 
       if (isDebugEnabled) {
-        const consoleResponse = (await browser.tabs.sendMessage(activeTabId, {
-          type: CHANMAMA_LOG_TO_CONSOLE_MESSAGE_TYPE,
-          payload: collectResponse.data,
-        })) as ChanmamaLogToConsoleResponse;
+        const consoleResponse = await logExportToPageConsole(
+          activeTabId,
+          collectResponse.data,
+        );
 
         if (!consoleResponse) {
           setStatus(
@@ -383,6 +513,7 @@ function App() {
         setStatus({
           tone: 'success',
           message: `导出完成，页面控制台已输出 ${Object.keys(collectResponse.data).length} 个字段。`,
+          details: recoveredByInjection ? ['recoveredByInjection=true'] : undefined,
         });
         return;
       }
@@ -412,6 +543,7 @@ function App() {
       setStatus({
         tone: 'success',
         message: `导入完成，飞书多维表格已新增记录 ${feishuResponse.recordId}。`,
+        details: recoveredByInjection ? ['recoveredByInjection=true'] : undefined,
       });
     } catch (error) {
       setStatus({
