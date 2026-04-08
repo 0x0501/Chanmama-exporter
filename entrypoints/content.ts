@@ -4,6 +4,7 @@ import {
   CHANMAMA_COLLECT_MESSAGE_TYPE,
   CHANMAMA_LOG_TO_CONSOLE_MESSAGE_TYPE,
   CHANMAMA_TEXT_SELECTOR_SCHEMA,
+  createChanmamaError,
   getChanmamaSelectorSettings,
   type ChanmamaCollectMessage,
   type ChanmamaCollectResponse,
@@ -29,8 +30,10 @@ function queryElement(selector: string) {
 
   try {
     return document.querySelector<HTMLElement>(selector);
-  } catch {
-    return null;
+  } catch (error) {
+    throw new Error(
+      error instanceof Error ? error.message : `Invalid selector: ${selector.slice(0, 120)}`,
+    );
   }
 }
 
@@ -83,7 +86,12 @@ async function handleCollect(): Promise<ChanmamaCollectResponse> {
   if (!isSupportedChanmamaPage()) {
     return {
       ok: false,
-      error: '当前页面不是支持的蝉妈妈达人详情页。',
+      error: createChanmamaError(
+        'content-collect',
+        'UNSUPPORTED_PAGE',
+        '当前页面不是支持的蝉妈妈达人详情页。',
+        [`pathname=${window.location.pathname}`],
+      ),
     };
   }
 
@@ -97,7 +105,15 @@ async function handleCollect(): Promise<ChanmamaCollectResponse> {
   } catch (error) {
     return {
       ok: false,
-      error: error instanceof Error ? error.message : '采集失败，请检查 selector 配置后重试。',
+      error: createChanmamaError(
+        'content-collect',
+        'QUERY_FAILED',
+        '采集失败，请检查 selector 配置后重试。',
+        [
+          `pathname=${window.location.pathname}`,
+          error instanceof Error ? error.message : 'Unknown content collection error',
+        ],
+      ),
     };
   }
 }
@@ -106,7 +122,12 @@ function handleLogToConsole(message: ChanmamaLogToConsoleMessage): ChanmamaLogTo
   if (!isSupportedChanmamaPage()) {
     return {
       ok: false,
-      error: '当前页面不是支持的蝉妈妈达人详情页。',
+      error: createChanmamaError(
+        'content-log',
+        'UNSUPPORTED_PAGE',
+        '当前页面不是支持的蝉妈妈达人详情页。',
+        [`pathname=${window.location.pathname}`],
+      ),
     };
   }
 
@@ -119,7 +140,12 @@ function handleLogToConsole(message: ChanmamaLogToConsoleMessage): ChanmamaLogTo
   } catch (error) {
     return {
       ok: false,
-      error: error instanceof Error ? error.message : '写入页面控制台失败，请稍后重试。',
+      error: createChanmamaError(
+        'content-log',
+        'CONSOLE_LOG_FAILED',
+        '写入页面控制台失败，请稍后重试。',
+        [error instanceof Error ? error.message : 'Unknown page console write error'],
+      ),
     };
   }
 }
@@ -133,13 +159,34 @@ export default defineContentScript({
     }
 
     browser.runtime.onMessage.addListener(
-      (message: ChanmamaCollectMessage | ChanmamaLogToConsoleMessage) => {
+      (
+        message: ChanmamaCollectMessage | ChanmamaLogToConsoleMessage,
+        _sender,
+        sendResponse,
+      ) => {
         if (message?.type === CHANMAMA_COLLECT_MESSAGE_TYPE) {
-          return handleCollect();
+          void handleCollect()
+            .then((response) => {
+              sendResponse(response);
+            })
+            .catch((error: unknown) => {
+              sendResponse({
+                ok: false,
+                error: createChanmamaError(
+                  'content-collect',
+                  'UNKNOWN',
+                  '采集失败，请检查 selector 配置后重试。',
+                  [error instanceof Error ? error.message : 'Unknown content runtime error'],
+                ),
+              } satisfies ChanmamaCollectResponse);
+            });
+
+          return true;
         }
 
         if (message?.type === CHANMAMA_LOG_TO_CONSOLE_MESSAGE_TYPE) {
-          return handleLogToConsole(message);
+          sendResponse(handleLogToConsole(message));
+          return false;
         }
 
         return undefined;

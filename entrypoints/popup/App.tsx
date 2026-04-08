@@ -22,6 +22,7 @@ import {
   setChanmamaFeishuSettings,
   setChanmamaSelectorSettings,
   type ChanmamaCollectResponse,
+  type ChanmamaErrorInfo,
   type ChanmamaFeishuImportResponse,
   type ChanmamaFeishuSettings,
   type ChanmamaLogToConsoleResponse,
@@ -33,11 +34,21 @@ type PopupStatus =
   | {
       tone: 'neutral';
       message: string;
+      details?: string[];
     }
   | {
       tone: 'success' | 'error';
       message: string;
+      details?: string[];
     };
+
+function buildErrorStatus(error: ChanmamaErrorInfo): PopupStatus {
+  return {
+    tone: 'error',
+    message: error.message,
+    details: [`stage=${error.stage}`, `code=${error.code}`, ...(error.details ?? [])],
+  };
+}
 
 function getSelectorModeLabel(mode: ChanmamaSelectorReadMode) {
   if (mode === 'children') {
@@ -175,6 +186,7 @@ function App() {
         setStatus({
           tone: 'error',
           message: error instanceof Error ? error.message : '初始化失败，请稍后重试。',
+          details: [error instanceof Error ? error.stack ?? error.message : 'Unknown init error'],
         });
       }
     }
@@ -216,6 +228,7 @@ function App() {
       setStatus({
         tone: 'error',
         message: error instanceof Error ? error.message : '无法读取设置。',
+        details: [error instanceof Error ? error.stack ?? error.message : 'Unknown settings read error'],
       });
     }
   }
@@ -245,6 +258,7 @@ function App() {
       setStatus({
         tone: 'error',
         message: error instanceof Error ? error.message : '保存设置失败。',
+        details: [error instanceof Error ? error.stack ?? error.message : 'Unknown settings save error'],
       });
     } finally {
       setIsSavingSettings(false);
@@ -266,6 +280,7 @@ function App() {
       setStatus({
         tone: 'error',
         message: error instanceof Error ? error.message : '恢复默认配置失败。',
+        details: [error instanceof Error ? error.stack ?? error.message : 'Unknown selector reset error'],
       });
     } finally {
       setIsSavingSettings(false);
@@ -288,6 +303,7 @@ function App() {
       setStatus({
         tone: 'error',
         message: error instanceof Error ? error.message : '切换 Debug 模式失败。',
+        details: [error instanceof Error ? error.stack ?? error.message : 'Unknown debug toggle error'],
       });
     } finally {
       setIsUpdatingDebug(false);
@@ -324,11 +340,20 @@ function App() {
         type: CHANMAMA_COLLECT_MESSAGE_TYPE,
       })) as ChanmamaCollectResponse;
 
-      if (!collectResponse?.ok) {
-        setStatus({
-          tone: 'error',
-          message: collectResponse?.error ?? '导出失败，未收到有效采集结果。',
-        });
+      if (!collectResponse) {
+        setStatus(
+          buildErrorStatus({
+            stage: 'popup-export',
+            code: 'NO_RESPONSE',
+            message: '采集失败，content script 没有返回结果。',
+            details: [`tabId=${activeTabId}`, `url=${activeUrl}`],
+          }),
+        );
+        return;
+      }
+
+      if (!collectResponse.ok) {
+        setStatus(buildErrorStatus(collectResponse.error));
         return;
       }
 
@@ -338,11 +363,20 @@ function App() {
           payload: collectResponse.data,
         })) as ChanmamaLogToConsoleResponse;
 
-        if (!consoleResponse?.ok) {
-          setStatus({
-            tone: 'error',
-            message: consoleResponse?.error ?? '写入页面控制台失败。',
-          });
+        if (!consoleResponse) {
+          setStatus(
+            buildErrorStatus({
+              stage: 'popup-export',
+              code: 'NO_RESPONSE',
+              message: '写入页面控制台失败，content script 没有返回结果。',
+              details: [`tabId=${activeTabId}`],
+            }),
+          );
+          return;
+        }
+
+        if (!consoleResponse.ok) {
+          setStatus(buildErrorStatus(consoleResponse.error));
           return;
         }
 
@@ -358,11 +392,20 @@ function App() {
         payload: collectResponse.data,
       })) as ChanmamaFeishuImportResponse;
 
-      if (!feishuResponse?.ok) {
-        setStatus({
-          tone: 'error',
-          message: feishuResponse?.error ?? '导入飞书失败。',
-        });
+      if (!feishuResponse) {
+        setStatus(
+          buildErrorStatus({
+            stage: 'popup-export',
+            code: 'NO_RESPONSE',
+            message: '导入飞书失败，background 没有返回结果。',
+            details: [`tabId=${activeTabId}`],
+          }),
+        );
+        return;
+      }
+
+      if (!feishuResponse.ok) {
+        setStatus(buildErrorStatus(feishuResponse.error));
         return;
       }
 
@@ -374,6 +417,7 @@ function App() {
       setStatus({
         tone: 'error',
         message: error instanceof Error ? error.message : '导出失败，请稍后重试。',
+        details: [error instanceof Error ? error.stack ?? error.message : 'Unknown popup export error'],
       });
     } finally {
       setIsExporting(false);
@@ -432,6 +476,9 @@ function App() {
                 <div className="status-copy-group">
                   <p className="status-title">{isSupportedPage ? '页面已就绪' : '等待匹配页面'}</p>
                   <p className="status-message">{status.message}</p>
+                  {status.details?.length ? (
+                    <pre className="status-details">{status.details.join('\n')}</pre>
+                  ) : null}
                 </div>
               </div>
 

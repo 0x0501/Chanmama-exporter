@@ -1,9 +1,11 @@
 import {
   CHANMAMA_FEISHU_IMPORT_MESSAGE_TYPE,
+  createChanmamaError,
   getChanmamaFeishuSettings,
   getChanmamaMissingFeishuSettings,
   isChanmamaFeishuSettingsComplete,
   type ChanmamaExportData,
+  type ChanmamaErrorInfo,
   type ChanmamaFeishuImportMessage,
   type ChanmamaFeishuImportResponse,
   type ChanmamaFeishuSettings,
@@ -27,6 +29,16 @@ type FeishuCreateRecordPayload = {
     };
   };
 };
+
+function isChanmamaErrorInfo(value: unknown): value is ChanmamaErrorInfo {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'stage' in value &&
+    'code' in value &&
+    'message' in value
+  );
+}
 
 async function parseJsonResponse<T>(response: Response): Promise<T | null> {
   try {
@@ -60,7 +72,12 @@ function assertFeishuSettingsReady(settings: ChanmamaFeishuSettings) {
   }
 
   const missingSettings = getChanmamaMissingFeishuSettings(settings);
-  throw new Error(`请先在设置中补全飞书配置：${missingSettings.join('、')}。`);
+  throw createChanmamaError(
+    'background-feishu',
+    'FEISHU_SETTINGS_INCOMPLETE',
+    `请先在设置中补全飞书配置：${missingSettings.join('、')}。`,
+    missingSettings,
+  );
 }
 
 async function requestTenantAccessToken(settings: ChanmamaFeishuSettings) {
@@ -78,11 +95,24 @@ async function requestTenantAccessToken(settings: ChanmamaFeishuSettings) {
   const payload = await parseJsonResponse<FeishuTenantAccessTokenPayload>(response);
 
   if (!response.ok) {
-    throw new Error(formatFeishuErrorMessage(`飞书鉴权失败，HTTP ${response.status}`, payload));
+    throw createChanmamaError(
+      'background-feishu',
+      'FEISHU_AUTH_FAILED',
+      formatFeishuErrorMessage(`飞书鉴权失败，HTTP ${response.status}`, payload),
+      [`httpStatus=${response.status}`],
+    );
   }
 
   if (payload?.code !== 0 || !payload.tenant_access_token) {
-    throw new Error(formatFeishuErrorMessage('飞书鉴权失败', payload));
+    throw createChanmamaError(
+      'background-feishu',
+      'FEISHU_AUTH_FAILED',
+      formatFeishuErrorMessage('飞书鉴权失败', payload),
+      [
+        typeof payload?.code === 'number' ? `feishuCode=${payload.code}` : '',
+        payload?.msg?.trim() ?? '',
+      ],
+    );
   }
 
   return payload.tenant_access_token;
@@ -113,11 +143,24 @@ async function createFeishuRecord(
   const payload = await parseJsonResponse<FeishuCreateRecordPayload>(response);
 
   if (!response.ok) {
-    throw new Error(formatFeishuErrorMessage(`写入飞书失败，HTTP ${response.status}`, payload));
+    throw createChanmamaError(
+      'background-feishu',
+      'FEISHU_RECORD_FAILED',
+      formatFeishuErrorMessage(`写入飞书失败，HTTP ${response.status}`, payload),
+      [`httpStatus=${response.status}`],
+    );
   }
 
   if (payload?.code !== 0 || !payload.data?.record?.record_id) {
-    throw new Error(formatFeishuErrorMessage('写入飞书失败', payload));
+    throw createChanmamaError(
+      'background-feishu',
+      'FEISHU_RECORD_FAILED',
+      formatFeishuErrorMessage('写入飞书失败', payload),
+      [
+        typeof payload?.code === 'number' ? `feishuCode=${payload.code}` : '',
+        payload?.msg?.trim() ?? '',
+      ],
+    );
   }
 
   return payload.data.record.record_id;
@@ -139,17 +182,40 @@ async function importChanmamaDataToFeishu(
   } catch (error) {
     return {
       ok: false,
-      error: error instanceof Error ? error.message : '写入飞书失败，请稍后重试。',
+      error: isChanmamaErrorInfo(error)
+        ? error
+        : createChanmamaError(
+            'background-feishu',
+            'UNKNOWN',
+            '写入飞书失败，请稍后重试。',
+            [error instanceof Error ? error.message : 'Unknown Feishu import error'],
+          ),
     };
   }
 }
 
 export default defineBackground(() => {
-  browser.runtime.onMessage.addListener((message: ChanmamaFeishuImportMessage) => {
+  browser.runtime.onMessage.addListener((message: ChanmamaFeishuImportMessage, _sender, sendResponse) => {
     if (message?.type !== CHANMAMA_FEISHU_IMPORT_MESSAGE_TYPE) {
       return undefined;
     }
 
-    return importChanmamaDataToFeishu(message.payload);
+    void importChanmamaDataToFeishu(message.payload)
+      .then((response) => {
+        sendResponse(response);
+      })
+      .catch((error: unknown) => {
+        sendResponse({
+          ok: false,
+          error: createChanmamaError(
+            'background-feishu',
+            'UNKNOWN',
+            '写入飞书失败，请稍后重试。',
+            [error instanceof Error ? error.message : 'Unknown background runtime error'],
+          ),
+        } satisfies ChanmamaFeishuImportResponse);
+      });
+
+    return true;
   });
 });
