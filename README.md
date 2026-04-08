@@ -80,20 +80,9 @@ pnpm run compile
 
 1. Start dev mode or build the extension first.
 2. Load the WXT output directory in your browser.
-3. Open a Chanmama blogger detail page, for example:
-
-```text
-https://www.chanmama.com/bloggerRank/XpVfCbDDPbFh3jg9fN8IJGOfV1lOJOmo.html
-```
-
+3. Open a Chanmama blogger detail page.
 4. Click the extension icon to open the popup.
-5. Open popup `设置` and configure Feishu if you want to import to Bitable.
+5. Open popup `Setting` and configure Feishu if you want to import to Bitable.
 6. Keep `Debug` off to import to Feishu, or turn `Debug` on to print to the page console.
 7. Click the main action button.
 8. If `Debug` is enabled, open DevTools on the active page and inspect the exported object in the page console.
-
-## Test Fixture
-
-The repository includes a sample page for local reference:
-
-- [tests/sample.html](/tests/sample.html)
