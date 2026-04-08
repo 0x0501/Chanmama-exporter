@@ -7,6 +7,8 @@ A browser extension built with `WXT + React + TypeScript`. The current implement
 - Activates only on `https://www.chanmama.com/bloggerRank/*.html`
 - Detects whether the current tab is a supported page when the popup opens
 - Collects page data and prints a single object to the active page console after clicking `Export to Console`
+- Provides a selector settings dialog in popup (built with BaseUI)
+- Persists selector settings with WXT storage (`local:chanmama-selector-settings`)
 
 ## Exported Fields
 
@@ -26,6 +28,7 @@ A browser extension built with `WXT + React + TypeScript`. The current implement
 
 - `是否投流` falls back to `false` when the target element is not found
 - `视频画像` is merged into a single string in page order
+- Empty or invalid custom selectors automatically fall back to default selectors
 
 ## Tech Stack
 

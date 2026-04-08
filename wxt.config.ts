@@ -5,6 +5,7 @@ export default defineConfig({
 	manifest: {
 		name: "Chanmama Exporter",
 		version: "0.0.1",
+		permissions: ["storage", "tabs"],
 	},
 	modules: ["@wxt-dev/module-react", "@wxt-dev/auto-icons"],
 });
